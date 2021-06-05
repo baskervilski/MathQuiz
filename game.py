@@ -60,7 +60,7 @@ def print_test_report(test_stats):
     print(f"{test_stats.question_time.mean():.1f} seconds per question, on average")
 
     if test_stats.answer.mean() == 1:
-        print('AMAING! Not a single mistake!') 
+        print('AMAZING! Not a single mistake!') 
 
     print('-'*80)
 
