@@ -1,19 +1,14 @@
-#%%
-
 import os
+from datetime import datetime as dt
+from itertools import product
+
 import pandas as pd
 import numpy as np
-from datetime import datetime as dt
 
 import config as cfg
 
-#%%
 
-
-
-#%%
-
-def select_player(df_stats):
+def select_player(df_stats: pd.DataFrame) -> str:
 
     if df_stats.empty:
         current_player = input("Enter player name: ")
@@ -21,7 +16,8 @@ def select_player(df_stats):
         players = {i: u for i, u in enumerate(df_stats['player'].drop_duplicates().values, 1)}
 
         print("Select an existing player or type a new name: ")
-        {print(i, ":", u) for i, u in players.items()}
+        for i, u in players.items():
+            print(i, ":", u)
         current_player = input(" >> ")
 
         if current_player.isnumeric():
@@ -65,69 +61,60 @@ def print_test_report(test_stats):
     print('-'*80)
 
 
-#%% 
-
-def main():
-
-    if os.path.exists(cfg.stats_file):
-        df_stats = pd.read_csv(cfg.stats_file)
-    else:
-        df_stats = pd.DataFrame()
-
-    current_player = select_player(df_stats)
+def play_round(player):
 
     test_start = dt.now().strftime('%Y-%m-%d %T')
 
-    questions = []
+    all_possible_questions = [f'{a} {op} {b}' for a, op, b in product(cfg.FIGURES, ['*', '+', '-'], cfg.FIGURES)]
+    round_questions = np.random.choice(all_possible_questions, cfg.N_QUESTIONS)
     answers = []
     times_per_question = []
 
-    figures = cfg.figures
-
-    for i in range(cfg.n_questions):
+    for i, q in enumerate(round_questions):
 
         t0 = dt.now()
+        answer_expected = eval(q)
+        answer_given = input(f'{i+1}/{cfg.N_QUESTIONS}: What is {q} = ')
 
-        while 1:
-            a = np.random.choice(figures)
-            b = np.random.choice(figures)
-
-            # If question already asked, generate another one
-            if sorted([a, b]) not in questions:
-                break
-
-        questions.append([a, b])
-        odgovor = input(f'{i+1}/{cfg.n_questions}: What is {a} * {b} = ')
-
-        odgovor_tacan = (int(odgovor) == a * b)
-
-        if odgovor_tacan:
+        if (answer_correct := int(answer_given) == answer_expected):
             print('Correct! Good job!')
         else:
-            print(f'Nope... :-( the correct answer is = {a*b}')
+            print(f'Nope... :-( the correct answer is = {answer_expected}')
 
-        answers.append(odgovor_tacan)
+        answers.append(answer_correct)
         times_per_question.append((dt.now() - t0).total_seconds())
 
     print('End of the test!')
 
     this_test_stats = pd.DataFrame({
-        'player': current_player,
-        'question': questions,
+        'player': player,
+        'question': round_questions,
         'answer': answers,
         'question_time': times_per_question,
         'test_time': test_start
     })
 
+    return this_test_stats
+
+def main():
+
+    if os.path.exists(cfg.STATS_FILE):
+        df_stats = pd.read_csv(cfg.STATS_FILE)
+    else:
+        df_stats = pd.DataFrame()
+
+    current_player = select_player(df_stats)
+
+    this_test_stats = play_round(player=current_player)
+
     print_test_report(this_test_stats)
 
     df_stats = df_stats.append(this_test_stats)
 
-    df_stats.to_csv(cfg.stats_file, index=False)
+    df_stats.to_csv(cfg.STATS_FILE, index=False)
 
     print_user_overall_stats(df_stats)
 
-# %%
 
 if __name__ == "__main__":
     main()
