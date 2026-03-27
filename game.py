@@ -7,149 +7,220 @@ import numpy as np
 
 import config as cfg
 
+try:
+    from colorama import init, Fore, Style
+    init(autoreset=True)
+    HAS_COLOR = True
+except ImportError:
+    HAS_COLOR = False
+
+    class Fore:
+        GREEN = RED = YELLOW = CYAN = MAGENTA = RESET = ""
+
+    class Style:
+        BRIGHT = RESET_ALL = ""
+
+
+def c(text, *codes):
+    """Wrap text in color codes when colorama is available."""
+    if not HAS_COLOR:
+        return str(text)
+    return f"{''.join(codes)}{text}{Style.RESET_ALL}"
+
 
 def select_player(df_stats: pd.DataFrame) -> str:
-
     if df_stats.empty:
-        current_player = input("Enter player name: ")
+        return input("Enter player name: ").strip()
+
+    players = {i: u for i, u in enumerate(df_stats["player"].drop_duplicates().values, 1)}
+    print("Select an existing player or type a new name:")
+    for i, u in players.items():
+        print(f"  {i} : {u}")
+    choice = input(" >> ").strip()
+
+    if choice.isnumeric() and int(choice) in players:
+        current_player = players[int(choice)]
     else:
-        players = {
-            i: u for i, u in enumerate(df_stats["player"].drop_duplicates().values, 1)
-        }
+        current_player = choice
 
-        print("Select an existing player or type a new name: ")
-        for i, u in players.items():
-            print(i, ":", u)
-        current_player = input(" >> ")
-
-        if current_player.isnumeric():
-            if int(current_player) in players:
-                current_player = players[int(current_player)]
-            else:
-                print("User index invalid!")
-
-    print("Player selected:", current_player)
-
+    print(f"Player: {c(current_player, Fore.CYAN)}")
     return current_player
 
 
-def print_user_overall_stats(df_stats):
-
-    print("=" * 80)
-    print("Stats per user:")
-    print("-" * 80)
-
-    print(
-        df_stats.groupby(["player"])[["answer", "question_time"]]
-        .mean()
-        .sort_values(by="answer", ascending=False)
-    )
-
-    print("-" * 80)
+def select_difficulty():
+    levels = {
+        "1": ("Easy",   cfg.FIGURES_EASY,    80),
+        "2": ("Medium", cfg.FIGURES_MEDIUM, 100),
+        "3": ("Hard",   cfg.FIGURES_HARD,   200),
+    }
+    print("\nDifficulty:  1=Easy (2-12)  2=Medium (2-50)  3=Hard (2-99)  [default: 2]")
+    choice = input(" >> ").strip()
+    name, figures, max_result = levels.get(choice, levels["2"])
+    print(f"Difficulty: {c(name, Fore.CYAN)}")
+    return figures, max_result
 
 
-def print_test_report(test_stats):
+def select_operations():
+    options = {
+        "1": (["+"],              "Addition only"),
+        "2": (["-"],              "Subtraction only"),
+        "3": (["*"],              "Multiplication only"),
+        "4": (["/"],              "Division only"),
+        "":  (["+", "-", "*", "/"], "All operations"),
+    }
+    print("Operations:  1=+  2=-  3=*  4=/  Enter=All  [default: All]")
+    choice = input(" >> ").strip()
+    ops, label = options.get(choice, options[""])
+    print(f"Operations: {c(label, Fore.CYAN)}")
+    return ops
 
-    print("=" * 80)
 
-    print(f"{test_stats.answer.mean()*100:.1f} % of correct answers")
-    print(f"{test_stats.question_time.sum():.1f} seconds in total")
-    print(f"{test_stats.question_time.mean():.1f} seconds per question, on average")
-
-    if test_stats.answer.mean() == 1:
-        print("AMAZING! Not a single mistake!")
-
-    print("-" * 80)
-
-
-def generate_all_valid_questions(
-    figures, operations=("*", "+", "-", "/"), max_result=100
-):
-
-    all_valid_questions = []
-    for a, op, b in product(figures, operations, figures):
-        q_string = f"{a:2} {op} {b:2}"
-        res = eval(q_string)
-
-        if res > max_result:
+def generate_valid_questions(figures, operation, max_result=100):
+    questions = []
+    for a, b in product(figures, figures):
+        q = f"{a:2} {operation} {b:2}"
+        res = eval(q)
+        if res > max_result or res < 0:
             continue
-
-        if op == "/" and (np.floor(res) != float(res) or res == 1):
+        if operation == "/" and (np.floor(res) != res or res == 1):
             continue
-        all_valid_questions.append([q_string, res])
+        questions.append((q, int(res)))
+    return questions
 
-    return all_valid_questions
 
-
-def play_round(player):
-
+def play_round(player, figures, max_result, operations):
     test_start = dt.now().strftime("%Y-%m-%d %T")
+    per_op = cfg.TOTAL_QUESTIONS // len(operations)
 
     round_questions = []
-    for op in ["/", "-", "+", "*"]:
-        valid_op_questions = generate_all_valid_questions(cfg.FIGURES, operations=[op])
-        # results = [abs(res) for _, res in valid_op_questions]
-        # sum_res = sum(results)
-        # probas = [r/sum_res for r in results]
-        # assert sum(probas) == 1, sum(probas)
-        choice_indices = np.random.choice(
-            len(valid_op_questions),
-            cfg.N_QUESTIONS,
-            replace=False,
-            # p=probas,
-        )
-        round_questions += [valid_op_questions[i] for i in choice_indices]
+    for op in operations:
+        pool = generate_valid_questions(figures, op, max_result)
+        n = min(per_op, len(pool))
+        indices = np.random.choice(len(pool), n, replace=False)
+        round_questions += [pool[i] for i in indices]
 
-    answers = []
-    times_per_question = []
+    np.random.shuffle(round_questions)
 
-    for i, (q, answer_expected) in enumerate(round_questions):
+    answers, times, scores = [], [], []
+    streak = 0
+    max_streak = 0
+    total = len(round_questions)
 
+    for i, (q, expected) in enumerate(round_questions):
         t0 = dt.now()
-        # answer_expected = eval(q)
-        answer_given = input(f"{i+1}/{cfg.N_QUESTIONS}: What is {q} = ")
 
-        if answer_correct := int(answer_given) == answer_expected:
-            print("Correct! Good job!")
+        while True:
+            raw = input(f"{i+1}/{total}: What is {q} = ").strip()
+            try:
+                given = int(raw)
+                break
+            except ValueError:
+                print(c("Please enter a whole number.", Fore.YELLOW))
+
+        elapsed = (dt.now() - t0).total_seconds()
+        correct = given == expected
+
+        if correct:
+            streak += 1
+            max_streak = max(max_streak, streak)
+            msg = c("Correct! Good job!", Fore.GREEN)
+            if streak >= 3:
+                msg += c(f"  {streak} in a row!", Fore.MAGENTA, Style.BRIGHT)
+            print(msg)
         else:
-            print(f"Nope... :-( the correct answer is = {answer_expected}")
+            streak = 0
+            print(c(f"Nope... the correct answer is {expected}", Fore.RED))
 
-        answers.append(answer_correct)
-        times_per_question.append((dt.now() - t0).total_seconds())
+        # Score: 100 base + speed bonus (up to 50) + streak bonus (up to 100)
+        q_score = (100 + max(0, 50 - int(elapsed) * 5) + min(streak, 10) * 10) if correct else 0
+        answers.append(int(correct))
+        times.append(elapsed)
+        scores.append(q_score)
 
-    print("End of the test!")
+    print(c(f"\nBest streak this round: {max_streak}", Fore.CYAN))
 
-    this_test_stats = pd.DataFrame(
-        {
-            "player": player,
-            "question": round_questions,
-            "answer": answers,
-            "question_time": times_per_question,
-            "test_time": test_start,
-        }
+    return pd.DataFrame({
+        "player":        player,
+        "question":      [q for q, _ in round_questions],
+        "expected":      [e for _, e in round_questions],
+        "answer":        answers,
+        "question_time": times,
+        "score":         scores,
+        "test_time":     test_start,
+    })
+
+
+def print_test_report(stats, player, df_stats):
+    print("=" * 80)
+    accuracy = stats["answer"].mean() * 100
+    total_time = stats["question_time"].sum()
+    avg_time = stats["question_time"].mean()
+    total_score = stats["score"].sum()
+
+    if accuracy == 100:
+        print(c("AMAZING! Not a single mistake!", Fore.GREEN, Style.BRIGHT))
+    elif accuracy >= 80:
+        print(c("Great job!", Fore.GREEN))
+    elif accuracy >= 60:
+        print(c("Good effort! Keep practicing.", Fore.YELLOW))
+    else:
+        print(c("Keep trying, you'll get there!", Fore.RED))
+
+    print(f"Accuracy:   {c(f'{accuracy:.1f}%', Fore.CYAN)}")
+    print(f"Total time: {total_time:.1f}s   Avg per question: {avg_time:.1f}s")
+    print(f"Score:      {c(str(int(total_score)), Fore.MAGENTA, Style.BRIGHT)} points")
+
+    # Personal best
+    if not df_stats.empty and "answer" in df_stats.columns and player in df_stats["player"].values:
+        prev = df_stats[df_stats["player"] == player]
+        prev_best = prev.groupby("test_time")["answer"].mean().max() * 100
+        if accuracy > prev_best:
+            print(c("New personal best!", Fore.GREEN, Style.BRIGHT))
+
+    print("-" * 80)
+
+
+def print_wrong_answers(stats):
+    wrong = stats[stats["answer"] == 0]
+    if wrong.empty:
+        return
+    print(c(f"\nReview - {len(wrong)} missed question(s):", Fore.YELLOW))
+    for _, row in wrong.iterrows():
+        print(f"  {row['question']} = {c(str(row['expected']), Fore.GREEN)}")
+
+
+def print_leaderboard(df_stats):
+    print("=" * 80)
+    print("Leaderboard (top 5):")
+    print("-" * 80)
+    board = (
+        df_stats.groupby("player")[["answer", "question_time"]]
+        .mean()
+        .sort_values("answer", ascending=False)
+        .head(5)
     )
-
-    return this_test_stats
+    board["accuracy"] = board["answer"].map(lambda x: f"{x*100:.1f}%")
+    board["avg_time"] = board["question_time"].map(lambda x: f"{x:.1f}s")
+    print(board[["accuracy", "avg_time"]])
+    print("-" * 80)
 
 
 def main():
-
-    if os.path.exists(cfg.STATS_FILE):
-        df_stats = pd.read_csv(cfg.STATS_FILE)
-    else:
-        df_stats = pd.DataFrame()
+    df_stats = pd.read_csv(cfg.STATS_FILE) if os.path.exists(cfg.STATS_FILE) else pd.DataFrame()
 
     current_player = select_player(df_stats)
+    figures, max_result = select_difficulty()
+    operations = select_operations()
 
-    this_test_stats = play_round(player=current_player)
+    stats = play_round(current_player, figures, max_result, operations)
 
-    print_test_report(this_test_stats)
+    print_test_report(stats, current_player, df_stats)
+    print_wrong_answers(stats)
 
-    df_stats = df_stats.append(this_test_stats)
-
+    df_stats = pd.concat([df_stats, stats], ignore_index=True)
     df_stats.to_csv(cfg.STATS_FILE, index=False)
 
-    print_user_overall_stats(df_stats)
+    print_leaderboard(df_stats)
 
 
 if __name__ == "__main__":
